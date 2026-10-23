@@ -41,8 +41,8 @@ void myDisplay() {
     cy::Matrix4f model = cy::Matrix4f::Scale(0.05f) * cy::Matrix4f::Translation(-center); // Center the mesh
 
     cy::Matrix4f view = cy::Matrix4f::Translation(cy::Vec3f(0.0f, 0.0f, -cameraDistance)) *
-                       cy::Matrix4f::RotationX(cameraAngleX) *
-                       cy::Matrix4f::RotationY(cameraAngleY);
+                        cy::Matrix4f::RotationY(cameraAngleY) *
+                        cy::Matrix4f::RotationX(cameraAngleX);
 
     cy::Matrix4f projection;
     if (isPerspective) {
