@@ -1,0 +1,23 @@
+#version 460 core
+#include "common.glsl"
+
+layout(local_size_x = 64) in;
+
+uniform uint count;         // number of values in scanData
+uniform bool hasParent;     // false at the top level, which starts from zero
+
+// Down sweep of the prefix sum: each thread replaces the values of one block by the sum of everything before them.
+// scanSum is already scanned, so scanSum[block] is the sum of all earlier blocks.
+void main() {
+    uint block = gl_GlobalInvocationID.x;
+    uint first = block * SCAN_BLOCK;
+    if (first >= count) return;
+    uint last = min(first + SCAN_BLOCK, count);
+    uint sum = hasParent ? scanSum[block] : 0u;
+    for (uint i = first; i < last; i++) {
+        uint value = scanData[i];
+        scanData[i] = sum;
+        sum += value;
+    }
+    if (last == count) scanData[count] = sum;
+}

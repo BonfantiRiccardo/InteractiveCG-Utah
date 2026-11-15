@@ -1,0 +1,17 @@
+#version 460 core
+#include "common.glsl"
+
+layout(local_size_x = 64) in;
+
+uniform uint count;     // number of values in scanData
+
+// Up sweep of the prefix sum: each thread adds one block of values.
+void main() {
+    uint block = gl_GlobalInvocationID.x;
+    uint first = block * SCAN_BLOCK;
+    if (first >= count) return;
+    uint last = min(first + SCAN_BLOCK, count);
+    uint sum = 0u;
+    for (uint i = first; i < last; i++) sum += scanData[i];
+    scanSum[block] = sum;
+}

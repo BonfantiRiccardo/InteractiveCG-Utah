@@ -1,0 +1,21 @@
+#version 460 core
+#include "common.glsl"
+
+layout(local_size_x = 256) in;      // one workgroup per block of SORT_BLOCK pairs (256 = number of digits)
+
+uniform int  shift;         // position of the 8-bit digit sorted in this pass
+uniform uint maxBlocks;     // blocks per histogram row
+
+shared uint digitCount[256];
+
+// Counts how many keys of one block have each digit.
+void main() {
+    uint lane  = gl_LocalInvocationID.x;
+    uint block = gl_WorkGroupID.x;
+    digitCount[lane] = 0u;
+    barrier();
+    for (uint i = block * SORT_BLOCK + lane; i < (block + 1u) * SORT_BLOCK; i += 256u)
+        if (i < pairCount) atomicAdd(digitCount[(sortKey[i] >> shift) & 255u], 1u);
+    barrier();
+    histogram[lane * maxBlocks + block] = digitCount[lane];
+}

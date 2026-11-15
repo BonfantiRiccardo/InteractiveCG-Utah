@@ -1,0 +1,38 @@
+#version 460 core
+#include "common.glsl"
+
+layout(local_size_x = 256) in;
+
+uniform uint  splatCount;
+uniform ivec2 viewport;
+uniform int   tilesX;
+uniform int   depthBits;    // low bits of a key that hold the depth; the tile index is above them
+uniform float zFar;         // depth of the farthest splat
+uniform bool  tileMode;
+uniform uint  capacity;
+
+// Writes the (key, value) pairs of one splat: key = tile and depth, value = splat index.
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= splatCount) return;
+    uint slot = splatOffset[i];
+    uint end  = min(splatOffset[i + 1u], capacity);
+    if (slot >= end) return;
+
+    // logarithmic depth code: the same relative resolution at every distance
+    Record r = record[i];
+    float t = clamp(log(r.colorDepth.a / Z_NEAR) / log(zFar / Z_NEAR), 0.0, 1.0);
+    uint depthCode = uint(t * float((1u << depthBits) - 1u));
+
+    if (!tileMode) {
+        sortKey[slot] = depthCode;
+        sortValue[slot] = i;
+        return;
+    }
+    ivec4 tiles = tileRect(r.meanExtent.xy, r.meanExtent.zw, viewport);
+    for (int y = tiles.y; y <= tiles.w; y++)
+        for (int x = tiles.x; x <= tiles.z && slot < end; x++, slot++) {
+            sortKey[slot] = (uint(y * tilesX + x) << depthBits) | depthCode;
+            sortValue[slot] = i;
+        }
+}

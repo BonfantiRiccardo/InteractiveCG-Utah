@@ -1,0 +1,59 @@
+#version 460 core
+#include "common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16) in;    // one workgroup per tile, one thread per pixel
+
+layout(rgba8, binding = 0) uniform writeonly image2D outputImage;
+uniform ivec2 viewport;
+uniform int   tilesX;
+uniform vec3  background;
+
+const uint BATCH = 256u;                    // splats loaded per round, one by each thread
+shared vec2 batchMean[BATCH];
+shared vec4 batchConicOpacity[BATCH];
+shared vec3 batchColor[BATCH];
+shared uint finishedPixels;
+
+// Blends the splats of one tile front to back, as in 3DGS; a pixel stops when almost no light passes anymore.
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    uint  lane  = gl_LocalInvocationIndex;
+    uvec2 range = tileRange[gl_WorkGroupID.y * uint(tilesX) + gl_WorkGroupID.x];
+
+    vec3  color = vec3(0.0);
+    float T = 1.0;                                              // transmittance left at this pixel
+    bool  finished = any(greaterThanEqual(pixel, viewport));    // pixels of a border tile outside the image
+    bool  counted = false;
+    if (lane == 0u) finishedPixels = 0u;
+
+    // cycle through the splats of this tile in batches, one per thread, until all pixels are finished
+    for (uint first = range.x; first < range.y; first += BATCH) {
+        if (first + lane < range.y) {
+            Record r = record[sortValue[first + lane]];
+            batchMean[lane] = r.meanExtent.xy;
+            batchConicOpacity[lane] = r.conicOpacity;
+            batchColor[lane] = r.colorDepth.rgb;
+        }
+        barrier();          // wait for all threads to load their splat, so the batch is complete
+
+        // loop through the batch, front to back, until this pixel is finished
+        uint count = min(BATCH, range.y - first);
+        for (uint j = 0u; j < count && !finished; j++) {
+            vec2 d = batchMean[j] - vec2(pixel);
+            vec4 conic = batchConicOpacity[j];
+            float power = -0.5 * (conic.x * d.x * d.x + conic.z * d.y * d.y) - conic.y * d.x * d.y;
+            if (power > 0.0) continue;
+            float alpha = min(0.99, conic.w * exp(power));
+            if (alpha < ALPHA_MIN) continue;
+            if (T * (1.0 - alpha) < 0.0001) { finished = true; break; }
+            color += batchColor[j] * alpha * T;
+            T *= 1.0 - alpha;
+        }
+
+        // all threads leave the loop together, once every pixel of the tile is finished
+        if (finished && !counted) { atomicAdd(finishedPixels, 1u); counted = true; }
+        barrier();
+        if (finishedPixels == 256u) break;
+    }
+    if (all(lessThan(pixel, viewport))) imageStore(outputImage, pixel, vec4(color + T * background, 1.0));
+}

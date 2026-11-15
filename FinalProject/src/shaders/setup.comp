@@ -1,0 +1,24 @@
+#version 460 core
+#include "common.glsl"
+
+layout(local_size_x = 1) in;
+
+uniform uint splatCount;
+uniform uint capacity;      // pairs that fit in the sort buffers
+
+// Turns the pair total into the sizes of the passes that depend on it, so the CPU does not have to wait for it.
+void main() {
+    pairTotal = splatOffset[splatCount];
+    pairCount = min(pairTotal, capacity);
+
+    indirect[0] = (pairCount + SORT_BLOCK - 1u) / SORT_BLOCK;   // sort passes: one workgroup per block
+    indirect[1] = 1u;
+    indirect[2] = 1u;
+    indirect[3] = (pairCount + 255u) / 256u;                    // tile ranges: 256 pairs per workgroup
+    indirect[4] = 1u;
+    indirect[5] = 1u;
+    indirect[6] = 4u;                                           // quad renderer: 4 vertices per instance
+    indirect[7] = pairCount;                                    // one instance per pair
+    indirect[8] = 0u;
+    indirect[9] = 0u;
+}

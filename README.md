@@ -1,5 +1,7 @@
 # Interactive Computer Graphics projects
 
+![Reflective Teapot with Environment Mapping](icgTeapot.png)
+
 My implementations of the eight projects of **CS 6610 Interactive Computer Graphics**, taught by [Cem Yuksel](http://www.cemyuksel.com/) at the University of Utah (Spring 2026). The course page, with the lectures and the original assignments, is at https://graphics.cs.utah.edu/courses/cs6610/spring2026/.
 
 Each project folder contains the assignment text (`instructions.md`). The projects also implement the additional requirements for CS 6610 students.

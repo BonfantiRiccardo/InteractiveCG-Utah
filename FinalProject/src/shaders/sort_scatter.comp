@@ -1,0 +1,50 @@
+#version 460 core
+#include "common.glsl"
+
+layout(local_size_x = 256) in;      // one workgroup per block of SORT_BLOCK pairs (256 = number of digits)
+
+uniform int  shift;         // position of the 8-bit digit sorted in this pass
+uniform uint maxBlocks;     // blocks per histogram row
+
+shared uint digitStart[256];        // next output position of each digit
+shared uint digitMask[256 * 8];     // per digit: one bit for each thread whose key has that digit
+
+// Moves the pairs of one block to their sorted positions for the current digit.
+// Pairs with the same digit keep their order (stable), which a radix sort needs between passes.
+void main() {
+    uint lane  = gl_LocalInvocationID.x;
+    uint block = gl_WorkGroupID.x;
+    uint word  = lane >> 5u, bit = 1u << (lane & 31u);
+    digitStart[lane] = histogram[lane * maxBlocks + block];     // scanned: where this block's keys with digit = lane go
+
+    // 16 chunks of 256 pairs, in order. Each thread handles one pair per chunk
+    for (uint i = block * SORT_BLOCK + lane; i < (block + 1u) * SORT_BLOCK; i += 256u) {
+        for (uint w = 0u; w < 8u; w++) digitMask[lane * 8u + w] = 0u;
+        barrier();
+
+        bool valid = i < pairCount;
+        uint key = 0u, digit = 0u, start = 0u;
+        if (valid) {
+            key   = sortKey[i];
+            digit = (key >> shift) & 255u;
+            start = digitStart[digit];
+            atomicOr(digitMask[digit * 8u + word], bit);
+        }
+        barrier();
+
+        if (valid) {
+            // rank: threads before this one with the same digit; total: all threads with this digit
+            uint rank = 0u, total = 0u;
+            for (uint w = 0u; w < 8u; w++) {
+                uint mask = digitMask[digit * 8u + w];
+                total += uint(bitCount(mask));
+                if (w < word) rank += uint(bitCount(mask));
+                if (w == word) rank += uint(bitCount(mask & (bit - 1u)));
+            }
+            sortKeyOut[start + rank] = key;
+            sortValueOut[start + rank] = sortValue[i];
+            if (rank + 1u == total) digitStart[digit] = start + total;      // one thread per digit advances the start
+        }
+        barrier();
+    }
+}
