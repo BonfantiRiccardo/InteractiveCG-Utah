@@ -1,4 +1,7 @@
 #version 460 core
+#define USE_COUNTS
+#define USE_PAIRS
+#define USE_SORT
 #include "common.glsl"
 
 layout(local_size_x = 256) in;      // one workgroup per block of SORT_BLOCK pairs (256 = number of digits)
@@ -33,7 +36,7 @@ void main() {
         barrier();
 
         if (valid) {
-            // rank: threads before this one with the same digit; total: all threads with this digit
+            // rank counts the earlier threads with the same digit, total counts all of them
             uint rank = 0u, total = 0u;
             for (uint w = 0u; w < 8u; w++) {
                 uint mask = digitMask[digit * 8u + w];

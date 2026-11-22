@@ -1,4 +1,7 @@
 #version 460 core
+#define USE_COUNTS
+#define USE_PAIRS
+#define USE_SORT
 #include "common.glsl"
 
 layout(local_size_x = 256) in;      // one workgroup per block of SORT_BLOCK pairs (256 = number of digits)

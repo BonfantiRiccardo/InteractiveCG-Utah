@@ -1,4 +1,7 @@
 #version 460 core
+#define USE_RECORDS
+#define USE_COUNTS
+#define USE_PAIRS
 #include "common.glsl"
 
 layout(local_size_x = 256) in;
@@ -6,8 +9,9 @@ layout(local_size_x = 256) in;
 uniform uint  splatCount;
 uniform ivec2 viewport;
 uniform int   tilesX;
-uniform int   depthBits;    // low bits of a key that hold the depth; the tile index is above them
-uniform float zFar;         // depth of the farthest splat
+uniform int   depthBits;    // number of low key bits that hold the depth (the tile index sits above them)
+uniform float zNear;        // depth range of the splats
+uniform float zFar;
 uniform bool  tileMode;
 uniform uint  capacity;
 
@@ -21,7 +25,7 @@ void main() {
 
     // logarithmic depth code: the same relative resolution at every distance
     Record r = record[i];
-    float t = clamp(log(r.colorDepth.a / Z_NEAR) / log(zFar / Z_NEAR), 0.0, 1.0);
+    float t = clamp(log(r.colorDepth.a / zNear) / log(zFar / zNear), 0.0, 1.0);
     uint depthCode = uint(t * float((1u << depthBits) - 1u));
 
     if (!tileMode) {

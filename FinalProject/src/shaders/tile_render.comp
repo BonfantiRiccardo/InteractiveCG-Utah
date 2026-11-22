@@ -1,20 +1,28 @@
 #version 460 core
+#define USE_RECORDS
+#define USE_PAIRS
+#define USE_TILES
 #include "common.glsl"
 
 layout(local_size_x = 16, local_size_y = 16) in;    // one workgroup per tile, one thread per pixel
 
-layout(rgba8, binding = 0) uniform writeonly image2D outputImage;
+layout(rgba8, binding = IMAGE_COLOR) uniform writeonly image2D outputImage;
+layout(r32f, binding = IMAGE_SURFACE) uniform writeonly image2D surfaceImage;   // view depth of the visible surface, 0 where there is none
+layout(binding = UNIT_MESH_COLOR) uniform sampler2D meshColor;    // meshes of the frame over the background
+layout(binding = UNIT_MESH_INFO) uniform sampler2D meshInfo;      // r: view depth of the meshes
 uniform ivec2 viewport;
 uniform int   tilesX;
-uniform vec3  background;
+uniform bool  peakDepth;            // compare a splat with the meshes at its peak along the pixel's ray, not at its center
 
 const uint BATCH = 256u;                    // splats loaded per round, one by each thread
 shared vec2 batchMean[BATCH];
 shared vec4 batchConicOpacity[BATCH];
-shared vec3 batchColor[BATCH];
+shared vec4 batchColorDepth[BATCH];
+shared vec2 batchSlope[BATCH];
 shared uint finishedPixels;
 
-// Blends the splats of one tile front to back, as in 3DGS; a pixel stops when almost no light passes anymore.
+// Blends the splats of one tile front to back, as in 3DGS. A pixel stops when almost no light passes anymore.
+// Splats in front of a mesh blend over it and splats behind it are skipped.
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     uint  lane  = gl_LocalInvocationIndex;
@@ -24,6 +32,9 @@ void main() {
     float T = 1.0;                                              // transmittance left at this pixel
     bool  finished = any(greaterThanEqual(pixel, viewport));    // pixels of a border tile outside the image
     bool  counted = false;
+    float meshDepth = finished ? 0.0 : texelFetch(meshInfo, pixel, 0).r;
+    float stopDepth = peakDepth ? meshDepth / (1.0 - PEAK_RANGE) : meshDepth;  // splats this deep are behind the mesh everywhere
+    float surface = 0.0;                                        // depth where T falls below ISO_T
     if (lane == 0u) finishedPixels = 0u;
 
     // cycle through the splats of this tile in batches, one per thread, until all pixels are finished
@@ -32,7 +43,8 @@ void main() {
             Record r = record[sortValue[first + lane]];
             batchMean[lane] = r.meanExtent.xy;
             batchConicOpacity[lane] = r.conicOpacity;
-            batchColor[lane] = r.colorDepth.rgb;
+            batchColorDepth[lane] = r.colorDepth;
+            batchSlope[lane] = r.depthSlope.xy;
         }
         barrier();          // wait for all threads to load their splat, so the batch is complete
 
@@ -45,9 +57,15 @@ void main() {
             if (power > 0.0) continue;
             float alpha = min(0.99, conic.w * exp(power));
             if (alpha < ALPHA_MIN) continue;
+            float depth = batchColorDepth[j].a;
+            if (depth >= stopDepth) { finished = true; break; }    // sorted by depth: the rest is hidden too
+            float peak = depth - dot(batchSlope[j], d);         // depth of the splat's peak along the ray of this pixel
+            // behind the mesh, with the peak capped at PEAK_RANGE past the center (the stop test covers the near side)
+            if (peakDepth && peak >= meshDepth && depth * (1.0 + PEAK_RANGE) >= meshDepth) continue;
             if (T * (1.0 - alpha) < 0.0001) { finished = true; break; }
-            color += batchColor[j] * alpha * T;
+            color += batchColorDepth[j].rgb * alpha * T;
             T *= 1.0 - alpha;
+            if (surface == 0.0 && T < ISO_T) surface = peak;
         }
 
         // all threads leave the loop together, once every pixel of the tile is finished
@@ -55,5 +73,9 @@ void main() {
         barrier();
         if (finishedPixels == 256u) break;
     }
-    if (all(lessThan(pixel, viewport))) imageStore(outputImage, pixel, vec4(color + T * background, 1.0));
+    if (all(lessThan(pixel, viewport))) {
+        if (surface == 0.0 && meshDepth < NO_MESH) surface = meshDepth;
+        imageStore(outputImage, pixel, vec4(color + T * texelFetch(meshColor, pixel, 0).rgb, 1.0));
+        imageStore(surfaceImage, pixel, vec4(surface));
+    }
 }

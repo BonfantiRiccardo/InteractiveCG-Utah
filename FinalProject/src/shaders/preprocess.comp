@@ -1,15 +1,24 @@
 #version 460 core
+#define USE_SPLATS
+#define USE_RECORDS
+#define USE_COUNTS
 #include "common.glsl"
+#include "lighting.glsl"
 
 layout(local_size_x = 256) in;
 
 uniform uint  splatCount;
 uniform mat4  view;             // world to view space (the camera looks down -z)
-uniform vec3  cameraPosition;
+uniform vec4  eye;              // camera position and 1, or for an orthographic camera the direction toward it and 0
+uniform bool  orthographic;
 uniform ivec2 viewport;         // render size in pixels
-uniform float focal;            // focal length in pixels
+uniform float focal;            // focal length in pixels, or pixels per world unit for an orthographic camera
+uniform float zNear;            // closer splats are culled
 uniform bool  tightBounds;      // box where alpha >= 1/255, instead of the 3 sigma square of 3DGS
 uniform bool  tileMode;         // tile renderer: one pair per touched tile / quad renderer: one pair per splat
+uniform bool  computeColor;     // false when only the footprints and depths are needed
+uniform bool  relight;          // false: keep the captured colors (no lights, ambient scale 1)
+uniform int   debugView;
 
 // Color of a splat seen along dir: spherical harmonics up to degree 3, as in 3DGS.
 vec3 evaluateSH(uint splat, vec3 dir) {
@@ -37,6 +46,24 @@ vec3 evaluateSH(uint splat, vec3 dir) {
     return max(color + 0.5, 0.0);
 }
 
+// Relights a splat. Its captured color counts as albedo times the sky light, so the ambient scales the sky and each
+// light adds its own term. The normal is the shortest axis, flipped to face the camera.
+vec3 shade(uint splat, vec3 position, vec3 color) {
+    vec3 n = splatNormal[splat].xyz;
+    if (dot(n, eye.xyz - position * eye.w) < 0.0) n = -n;
+    if (debugView == VIEW_NORMALS) return 0.5 + 0.5 * n;
+    if (debugView == VIEW_FLATNESS) return vec3(splatNormal[splat].w);
+    if (!relight && debugView != VIEW_LIGHT) return color;
+
+    vec3 sum = vec3(ambient);
+    for (uint j = 0u; j < lightCount; j++) {
+        vec3 l;
+        vec3 E = irradiance(light[j], position, l);
+        sum += E * max(dot(n, l), 0.0);
+    }
+    return toSrgb((debugView == VIEW_LIGHT ? vec3(1.0) : toLinear(color)) * sum);
+}
+
 // Projects one splat: 2D mean, conic, bounding box and color, and counts the (key, value) pairs it needs.
 void main() {
     uint i = gl_GlobalInvocationID.x;
@@ -47,15 +74,16 @@ void main() {
     float opacity  = splatPosition[i].w;
     vec3  p = (view * vec4(position, 1.0)).xyz;
     float depth = -p.z;
-    if (depth < Z_NEAR || opacity < ALPHA_MIN) return;
+    if (depth < zNear || opacity < ALPHA_MIN) return;
 
-    // 2D covariance = J W S W^T J^T (EWA splatting): W rotates to view space, J is the Jacobian of the
-    // projection to pixels. The clamp and the 0.3 pixel dilation are those of the 3DGS rasterizer.
+    // EWA splatting: 2D covariance = J W S W^T J^T, with the clamp and the 0.3 pixel dilation of the 3DGS rasterizer.
+    // The third row of J gives the view depth, so cov[2] holds the covariance of the pixel position with the depth.
     vec2 limit = 1.3 * 0.5 * vec2(viewport) / focal;
     vec2 q = clamp(p.xy / depth, -limit, limit) * depth;
     mat3 J = mat3(focal / depth, 0.0, 0.0,
                   0.0, focal / depth, 0.0,
-                  focal * q.x / (depth * depth), focal * q.y / (depth * depth), 0.0);
+                  focal * q.x / (depth * depth), focal * q.y / (depth * depth), -1.0);
+    if (orthographic) J = mat3(focal, 0.0, 0.0, 0.0, focal, 0.0, 0.0, 0.0, -1.0);     // exact, the same for every splat
     mat3 T = J * mat3(view);
     uint k = i * 6u;
     mat3 S = mat3(splatCovariance[k],      splatCovariance[k + 1u], splatCovariance[k + 2u],
@@ -77,11 +105,19 @@ void main() {
     }
 
     vec2 mean = focal * p.xy / depth + 0.5 * vec2(viewport - 1);
+    if (orthographic) mean = focal * p.xy + 0.5 * vec2(viewport - 1);
     ivec4 tiles = tileRect(mean, extent, viewport);
     if (tiles.z < tiles.x) return;
 
+    // Along a pixel's ray the splat peaks at depth + slope . (pixel - mean), the mean depth given that pixel,
+    // with slope = conic * cov[2].xy
+    vec3 conic = vec3(c, -b, a) / det;
+    vec2 slope = vec2(conic.x * cov[2].x + conic.y * cov[2].y, conic.y * cov[2].x + conic.z * cov[2].y);
+
     record[i].meanExtent   = vec4(mean, extent);
-    record[i].conicOpacity = vec4(c / det, -b / det, a / det, opacity);
-    record[i].colorDepth   = vec4(evaluateSH(i, normalize(position - cameraPosition)), depth);
+    record[i].conicOpacity = vec4(conic, opacity);
+    vec3 color = computeColor ? shade(i, position, evaluateSH(i, normalize(position * eye.w - eye.xyz))) : vec3(0.0);
+    record[i].colorDepth   = vec4(color, depth);
+    record[i].depthSlope   = vec4(slope, 0.0, 0.0);
     splatOffset[i] = tileMode ? uint((tiles.z - tiles.x + 1) * (tiles.w - tiles.y + 1)) : 1u;
 }

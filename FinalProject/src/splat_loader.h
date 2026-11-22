@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -13,6 +14,7 @@ struct SplatData {
     int count = 0;
     std::vector<float>    positions;    // 4 per splat: mean xyz, opacity
     std::vector<float>    covariances;  // 6 per splat: xx xy xz yy yz zz
+    std::vector<float>    normals;      // 4 per splat: shortest axis, flatness (1: a disc, 0: no shortest axis)
     std::vector<uint32_t> sh;           // 24 per splat: 16 RGB coefficients as 48 half floats
     cy::Vec3f center, up;               // center of the dense part of the scene, estimated up direction
     float radius = 1, extent = 1;       // distances from the center that contain 80% and 100% of the splats
@@ -65,8 +67,8 @@ void estimateFrame(SplatData& splats) {
             cov[a][b] += p[4 * i + 3] * (p[4 * i + a] - mean[a]) * (p[4 * i + b] - mean[b]);
     splats.center = cy::Vec3f((float)mean[0], (float)mean[1], (float)mean[2]);
 
-    // The ground is flat, so up is the direction of least variance: the smallest eigenvector of cov,
-    // which is the largest of (trace * I - cov) and is found by power iteration.
+    // The ground is flat, so up is the direction of least variance. That is the smallest eigenvector of cov,
+    // found by power iteration as the largest eigenvector of trace * I - cov.
     double trace = cov[0][0] + cov[1][1] + cov[2][2];
     double up[3] = { 1, 1, 1 };
     for (int iteration = 0; iteration < 200; iteration++) {
@@ -123,6 +125,7 @@ bool loadPly(const char* filename, SplatData& splats) {
     size_t count = splats.count;
     splats.positions.resize(4 * count);
     splats.covariances.resize(6 * count);
+    splats.normals.resize(4 * count);
     splats.sh.resize(24 * count);
     const size_t CHUNK = 65536;         // splats read from the file at a time
     std::vector<float> chunk(CHUNK * stride);
@@ -153,7 +156,15 @@ bool loadPly(const char* filename, SplatData& splats) {
             for (int r = 0; r < 3; r++) for (int c = r; c < 3; c++)
                 *covariance++ = M[r][0] * M[c][0] + M[r][1] * M[c][1] + M[r][2] * M[c][2];
 
-            // SH: coefficient 0 is f_dc; f_rest holds the others as all red, then all green, then all blue
+            // normal: the axis with the smallest scale. The scales are logarithms, so their difference gives a ratio
+            const float* scale = &v[iscale];
+            int shortest = int(std::min_element(scale, scale + 3) - scale);
+            float middle = scale[0] + scale[1] + scale[2] - scale[shortest] - *std::max_element(scale, scale + 3);
+            float* normal = &splats.normals[4 * i];
+            for (int r = 0; r < 3; r++) normal[r] = R[r][shortest];
+            normal[3] = 1.0f - std::exp(scale[shortest] - middle);
+
+            // SH: coefficient 0 comes from f_dc. f_rest stores the others as all red, then all green, then all blue
             uint16_t half[48] = {};
             for (int channel = 0; channel < 3; channel++) {
                 half[channel] = floatToHalf(v[idc + channel]);

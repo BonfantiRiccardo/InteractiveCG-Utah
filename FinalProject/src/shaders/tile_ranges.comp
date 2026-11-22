@@ -1,4 +1,7 @@
 #version 460 core
+#define USE_COUNTS
+#define USE_PAIRS
+#define USE_TILES
 #include "common.glsl"
 
 layout(local_size_x = 256) in;
